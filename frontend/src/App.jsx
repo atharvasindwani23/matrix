@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import DotWaveBackground from "./components/DotWaveBackground";
 import GraphCirclePanel from "./components/GraphCirclePanel";
 import addIcon from "../assets/icons/add.svg";
@@ -773,6 +773,32 @@ function buildNetworkGraphFromCsv(csvText) {
     nodeById.set(id, node);
   }
 
+  // Recovery safety net: a malformed CSV (e.g. an unquoted comma inside an
+  // address) shifts columns so the `connections` cell no longer holds agent IDs.
+  // If a row's declared connections resolve to nothing, scan its other cells for
+  // the one that actually looks like a connection list of valid agent IDs.
+  const knownIds = new Set(nodes.map((node) => node.id));
+  const looksLikeConnectionValue = (rawValue) => {
+    const tokens = splitConnectionTokens(rawValue);
+    if (tokens.length === 0) return null;
+    const valid = tokens.filter((token) => knownIds.has(token) && token);
+    return valid.length > 0 ? valid : null;
+  };
+  for (const node of nodes) {
+    const declaredValid = node.declared_connections.filter(
+      (target) => target !== node.id && knownIds.has(target)
+    );
+    if (declaredValid.length > 0) continue;
+    // Search remaining cells for a plausible connection list.
+    for (const value of Object.values(node.metadata || {})) {
+      const recovered = looksLikeConnectionValue(value);
+      if (recovered && recovered.some((target) => target !== node.id)) {
+        node.declared_connections = recovered;
+        break;
+      }
+    }
+  }
+
   const edges = [];
   const edgeSet = new Set();
   const warnings = [];
@@ -1019,6 +1045,40 @@ function parseCountToken(token) {
   return parseWordNumberToken(normalized);
 }
 
+// Resolve a bare count reply to a clarification (e.g. "5", "five", "let's do 8")
+// where no sample noun follows the number. Used when the clarify step asks
+// specifically for the number of agents and the user answers with just a count.
+function extractStandaloneCount(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return null;
+
+  const numericMatch = normalized.match(/\b(\d{1,9})\b/);
+  if (numericMatch?.[1]) {
+    const numeric = Number.parseInt(numericMatch[1], 10);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  }
+
+  // Scan for a contiguous run of number-words anywhere in the reply
+  // (e.g. "let's do twenty-five" -> 25), ignoring surrounding filler words.
+  const words = normalized.toLowerCase().replace(/[^a-z\s-]/g, " ").replace(/-/g, " ").split(/\s+/).filter(Boolean);
+  let run = [];
+  for (const word of words) {
+    if (Object.prototype.hasOwnProperty.call(NUMBER_WORD_LOOKUP, word)) {
+      run.push(word);
+    } else if (run.length > 0) {
+      const parsed = parseWordNumberToken(run.join(" "));
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      run = [];
+    }
+  }
+  if (run.length > 0) {
+    const parsed = parseWordNumberToken(run.join(" "));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  return null;
+}
+
 function inferEditTargetSampleCount(currentCsvPayload, changeRequest) {
   const currentCount = parseCsvRecords(currentCsvPayload).rows.length;
   const text = String(changeRequest || "").trim();
@@ -1116,6 +1176,9 @@ function downloadCsvArtifact(csvPayload, runId = "") {
   return true;
 }
 
+// Compact number of preview rows shown inside the inline artifact card.
+const CSV_CARD_PREVIEW_ROWS = 6;
+
 function CsvArtifactCard({
   summary,
   pending = false,
@@ -1133,8 +1196,20 @@ function CsvArtifactCard({
       : "Queue Download"
     : "Download CSV";
 
+  const { headers, rows } = useMemo(() => parseCsvRecords(previewText), [previewText]);
+  const hasTable = headers.length > 0;
+  const previewRows = hasTable ? rows.slice(0, CSV_CARD_PREVIEW_ROWS) : [];
+  const hiddenRowCount = Math.max(0, rows.length - previewRows.length);
+  const targetCount =
+    Number.isFinite(totalCount) && totalCount > 0 ? totalCount : null;
+  const statusLabel = pending
+    ? targetCount
+      ? `Generating agents… ${rows.length}/${targetCount}`
+      : `Generating agents… ${rows.length}`
+    : `${rows.length} agent${rows.length === 1 ? "" : "s"}`;
+
   return (
-    <div className={`csv-artifact-card ${pending ? "pending" : ""}`}>
+    <div className={`csv-artifact-card ${pending ? "pending" : ""} ${hasTable ? "has-table" : ""}`}>
       <button
         type="button"
         className={`csv-artifact-main ${isInteractive ? "interactive" : ""}`}
@@ -1146,10 +1221,53 @@ function CsvArtifactCard({
         }}
         disabled={!isInteractive}
       >
-        <div className="csv-artifact-badge">CSV</div>
-        <div className="csv-artifact-copy">
-          <p className="csv-artifact-title">Generated Agent Data</p>
+        <div className="csv-artifact-header">
+          <div className="csv-artifact-badge">CSV</div>
+          <div className="csv-artifact-copy">
+            <p className="csv-artifact-title">Generated Agent Data</p>
+            <p className={`csv-artifact-status ${pending ? "live" : ""}`}>
+              {pending ? <span className="csv-artifact-live-dot" aria-hidden="true" /> : null}
+              {statusLabel}
+            </p>
+          </div>
         </div>
+        {hasTable ? (
+          <div className="csv-artifact-table-wrap" aria-hidden="true">
+            <table className="csv-artifact-table">
+              <thead>
+                <tr>
+                  {headers.map((header, index) => (
+                    <th key={`csv-card-header-${index}`}>{header || `column_${index + 1}`}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.map((row, rowIndex) => (
+                  <tr key={`csv-card-row-${rowIndex}`}>
+                    {headers.map((header, colIndex) => (
+                      <td key={`csv-card-cell-${rowIndex}-${colIndex}`}>
+                        {String(row[header] || "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {pending ? (
+                  <tr className="csv-artifact-row-live">
+                    <td colSpan={headers.length}>
+                      <span className="csv-artifact-caret" aria-hidden="true" />
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+            {hiddenRowCount > 0 || isInteractive ? (
+              <p className="csv-artifact-more">
+                {hiddenRowCount > 0 ? `+${hiddenRowCount} more • ` : ""}
+                {isInteractive ? "click to expand" : ""}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </button>
       <button
         type="button"
@@ -3081,7 +3199,7 @@ function App() {
     return assistantText;
   };
 
-  const runMainQuery = async (enrichedPrompt, filesForSubmit, assistantPendingTurnId) => {
+  const runMainQuery = async (enrichedPrompt, filesForSubmit, assistantPendingTurnId, priorFollowUpCount = 0) => {
     const plannerContext = await buildPlannerContextBlock(filesForSubmit);
     const plannerEndpoint = plannerChatEndpointFor(PLANNER_MODEL_ENDPOINT);
     const plannerRequestUrl = USE_PLANNER_DEV_PROXY ? PLANNER_DEV_PROXY_PATH : plannerEndpoint;
@@ -3128,9 +3246,27 @@ function App() {
     });
 
   const csvPayload = extractCsvPayload(plannerText);
-  if (!csvPayload) return;
-  const { rows: csvRows, headers: csvHeaders } = parseCsvRecords(csvPayload);
-  if (!isValidMasterCsv(csvHeaders, csvRows)) return;
+  const parsedRecords = csvPayload ? parseCsvRecords(csvPayload) : { rows: [], headers: [] };
+  const producedValidCsv =
+    csvPayload && isValidMasterCsv(parsedRecords.headers, parsedRecords.rows);
+
+  // Safety net: if the planner replied with a question / prose instead of a CSV,
+  // don't silently bail (that used to strand the conversation and make the next
+  // reply look like a brand-new request). Re-arm the clarify loop so the user's
+  // next message is routed back through as another clarification round.
+  if (!producedValidCsv) {
+    setClarifyState({
+      originalPrompt: enrichedPrompt,
+      filesForSubmit,
+      followUpQuestionCount: priorFollowUpCount + 1
+    });
+    if (shouldAutoScrollRef.current) {
+      window.requestAnimationFrame(() => scrollChatToBottom("auto"));
+    }
+    return;
+  }
+
+  const { rows: csvRows, headers: csvHeaders } = parsedRecords;
   const sampleCount = csvRows.length;
     const derivedGraph = buildNetworkGraphFromCsv(csvPayload);
     setGraphPanelGraph(derivedGraph && Array.isArray(derivedGraph.nodes) ? derivedGraph : null);
@@ -3368,10 +3504,23 @@ function App() {
       const { originalPrompt, filesForSubmit, followUpQuestionCount = 0 } = clarifyState;
       const shouldForceGenerateNow =
         followUpQuestionCount >= CLARIFY_MAX_QUESTIONS || isForceGenerationReply(promptText);
+      // The clarify step asks specifically for the number of agents, so resolve the
+      // count from the original prompt, the clarification reply (incl. a bare number
+      // like "5"), and pin it explicitly so the planner generates EXACTLY that many.
+      const resolvedAgentCount =
+        extractRequestedSampleCountFromPrompt(`${originalPrompt}\n${promptText}`) ??
+        extractStandaloneCount(promptText);
+      const countDirective =
+        Number.isFinite(resolvedAgentCount) && resolvedAgentCount > 0
+          ? `\n\nStudy configuration: n = ${resolvedAgentCount}. Generate EXACTLY ${resolvedAgentCount} agent rows (no more, no fewer).`
+          : "";
       const enrichedPrompt = shouldForceGenerateNow
-        ? `${originalPrompt}\n\nUser instruction: Proceed now with reasonable assumptions and generate the data. Do not ask additional follow-up questions.`
-        : `${originalPrompt}\n\nUser's clarifications: ${promptText}`;
-      const requestedSampleCount = extractRequestedSampleCountFromPrompt(enrichedPrompt);
+        ? `${originalPrompt}\n\nUser's clarifications: ${promptText}${countDirective}\n\nUser instruction: Proceed now with reasonable assumptions and generate the data. Do not ask additional follow-up questions.`
+        : `${originalPrompt}\n\nUser's clarifications: ${promptText}${countDirective}`;
+      const requestedSampleCount =
+        (Number.isFinite(resolvedAgentCount) && resolvedAgentCount > 0
+          ? resolvedAgentCount
+          : null) ?? extractRequestedSampleCountFromPrompt(enrichedPrompt);
 
       const userTurn = { id: createRuntimeId("user"), role: "user", content: promptText };
       const assistantPendingTurnId = createRuntimeId("assistant");
@@ -3398,7 +3547,7 @@ function App() {
       window.requestAnimationFrame(() => scrollChatToBottom("smooth", true));
 
       try {
-        await runMainQuery(enrichedPrompt, filesForSubmit, assistantPendingTurnId);
+        await runMainQuery(enrichedPrompt, filesForSubmit, assistantPendingTurnId, followUpQuestionCount);
       } catch (error) {
         const failureTimeMs = Date.now();
         setChatMessages((prev) =>
@@ -3489,7 +3638,7 @@ function App() {
           {
             role: "system",
             content:
-              "You are a simulation planner assistant. Before generation, verify whether TWO required study parameters are present in the user request:\n1) n = number of representatives\n2) simulation_days = number of days to run the simulation\n\nRules:\n- If BOTH parameters are clearly specified, output exactly: NO_FOLLOWUPS\n- If EITHER parameter is missing or ambiguous, output EXACTLY ONE numbered follow-up question (only item '1.')\n- If both are missing, ask for both in that single question\n- If one is present, ask only for the missing one\n- Do NOT ask any other questions in this step\n- Output only NO_FOLLOWUPS or the one numbered question (no extra prose)"
+              "You are a simulation planner assistant. Your ONLY job in this step is to make sure the request is clear enough to generate agents, and that the number of agents (n) to simulate is known.\n\nHard rules:\n- The number of simulation days is FIXED at 5 and is NOT your concern. NEVER ask about days, duration, or timeframe.\n- Only two things can trigger follow-up questions: (a) the number of agents / representatives (n) is missing or ambiguous, and (b) the scenario itself is genuinely too vague to build agents from (e.g. no clear topic, population, or goal).\n- If n is clearly specified AND the scenario is clear enough, output exactly: NO_FOLLOWUPS\n- Otherwise, output a short numbered list of follow-up questions (formatted '1.', '2.', ...). ALWAYS include a question asking how many agents / representatives they want to simulate if n is not already clear. Add at most a couple of clarity questions only for genuinely vague scenarios.\n- NEVER ask about the number of days.\n- Output only NO_FOLLOWUPS or the numbered questions (no extra prose)."
           },
           {
             role: "user",

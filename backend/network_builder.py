@@ -1729,7 +1729,7 @@ async def _call_sim_agent(
         user_content = f"Your neighbors have been talking:\n{msgs}\nWhat's your take?"
 
     payload = {
-        "model": "deepseek-r1",
+        "model": _planner_model_id(),
         "messages": [
             {
                 "role": "system",
@@ -1746,13 +1746,39 @@ async def _call_sim_agent(
         "max_tokens": 512,
     }
 
+    max_attempts = 6
     try:
         async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
-            resp = await client.post(SIMULATION_MODAL_ENDPOINT, json=payload)
-            content = resp.json()["choices"][0]["message"]["content"]
-            if "</think>" in content:
-                content = content.split("</think>", 1)[1].strip()
-            return content.strip()
+            for attempt in range(max_attempts):
+                resp = await client.post(
+                    SIMULATION_MODAL_ENDPOINT,
+                    json=payload,
+                    headers=_planner_headers(),
+                )
+                # Retry on rate limit (429) or transient server errors (5xx),
+                # honoring the Retry-After header when present.
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    if attempt == max_attempts - 1:
+                        return f"[{agent_id} unavailable: HTTP {resp.status_code}: {resp.text[:180]}]"
+                    retry_after = resp.headers.get("retry-after")
+                    try:
+                        delay = float(retry_after) if retry_after else 0.0
+                    except ValueError:
+                        delay = 0.0
+                    if delay <= 0:
+                        delay = min(2 ** attempt, 30)
+                    await asyncio.sleep(delay)
+                    continue
+                if resp.status_code >= 400:
+                    return f"[{agent_id} unavailable: HTTP {resp.status_code}: {resp.text[:180]}]"
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not isinstance(content, str) or not content.strip():
+                    return f"[{agent_id} unavailable: empty model response]"
+                if "</think>" in content:
+                    content = content.split("</think>", 1)[1].strip()
+                return content.strip()
+        return f"[{agent_id} unavailable: exhausted retries]"
     except Exception as exc:
         return f"[{agent_id} unavailable: {exc}]"
 

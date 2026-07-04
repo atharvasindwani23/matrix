@@ -1894,6 +1894,12 @@ input {
   cursor: default;
 }
 
+/* When a live/preview table is shown, stack it under the header and pin the
+   download button to the top. */
+.csv-artifact-card.has-table {
+  align-items: flex-start;
+}
+
 .csv-artifact-card.pending {
   animation: csv-glow 1.6s var(--ease-soft) infinite;
 }
@@ -1914,6 +1920,101 @@ input {
   gap: 12px;
   border-radius: 12px;
   cursor: default;
+}
+
+/* Column layout so the header sits above the live table. */
+.csv-artifact-card.has-table .csv-artifact-main {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.csv-artifact-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.csv-artifact-status {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted-strong);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.csv-artifact-status.live {
+  color: var(--text);
+}
+
+.csv-artifact-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #f8f8f8;
+  animation: csv-glow 1.2s var(--ease-soft) infinite;
+}
+
+.csv-artifact-table-wrap {
+  width: 100%;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.csv-artifact-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.csv-artifact-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(20, 20, 20, 0.92);
+  color: var(--muted-strong);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  padding: 6px 10px;
+  letter-spacing: 0.02em;
+}
+
+.csv-artifact-table tbody td {
+  padding: 5px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.csv-artifact-table tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.csv-artifact-row-live td {
+  padding: 6px 10px;
+}
+
+.csv-artifact-caret {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.75);
+  animation: csv-glow 0.9s steps(2, jump-none) infinite;
+  vertical-align: middle;
+}
+
+.csv-artifact-more {
+  margin: 6px 2px 0;
+  font-size: 0.74rem;
+  color: var(--muted-strong);
 }
 
 .csv-artifact-main.interactive {
