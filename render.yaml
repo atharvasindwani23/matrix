@@ -1,0 +1,48 @@
+# Render blueprint for the matrix FastAPI backend.
+# Deploys backend/ as a single always-on web service so in-memory simulation
+# state, background tasks, and the /api/speech/live WebSocket keep working.
+#
+# After the first deploy, set the secret env vars (marked sync: false) in the
+# Render dashboard using the values from your local .env.
+services:
+  - type: web
+    name: matrix-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    # uv reads pyproject.toml + uv.lock for a reproducible install.
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run uvicorn server:web_app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      # Keep whisper from eagerly loading at boot (free tier is memory-limited).
+      - key: WHISPER_PREWARM
+        value: "false"
+      # --- Secrets: set these in the Render dashboard (values from .env) ---
+      - key: PLANNER_MODEL_ENDPOINT
+        sync: false
+      - key: PLANNER_MODEL_ID
+        sync: false
+      - key: PLANNER_API_KEY
+        sync: false
+      - key: REPORT_MODEL_ENDPOINT
+        sync: false
+      - key: REPORT_MODEL_ID
+        sync: false
+      - key: REPORT_API_KEY
+        sync: false
+      - key: SIM_MODAL_ENDPOINT
+        sync: false
+      - key: EXA_API_KEY
+        sync: false
+      - key: EXA_API_ENDPOINT
+        sync: false
+      - key: SUPERMEMORY_API_KEY
+        sync: false
+      - key: LIVEAVATAR_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
