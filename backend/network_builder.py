@@ -91,6 +91,7 @@ DEFAULT_REPORT_ENDPOINT = DEFAULT_PLANNER_ENDPOINT
 DEFAULT_REPORT_MODEL_ID = DEFAULT_PLANNER_MODEL_ID
 PLANNER_CONTEXT_MAX_TOTAL_CHARS = 26000
 PLANNER_CONTEXT_MAX_FILE_CHARS = 5000
+DEFAULT_EXA_API_ENDPOINT = "https://api.exa.ai/search"
 DEFAULT_LIVEAVATAR_BASE_URL = "https://api.liveavatar.com/v1"
 DEFAULT_AGENTS_CSV_PATH = Path(__file__).resolve().parent.parent / "backend-test" / "agents.csv"
 DEFAULT_AGENT_TO_AVATAR_PATH = (
@@ -1169,6 +1170,36 @@ async def save_generated_agents_csv(payload: SaveGeneratedCsvRequest) -> SaveGen
         avatar_mapping_path=str(mapping_path),
         portraits_index_path=str(portraits_index_path) if portraits_index_path else None,
     )
+
+
+@app.post("/api/exa/search")
+async def exa_search(payload: dict[str, Any]) -> Any:
+    """Proxy Exa search requests, injecting the server-side API key.
+
+    Mirrors the Vite dev-only exaProxy so the feature works in production:
+    the browser POSTs the same body it always has, and we forward it to Exa
+    with the x-api-key header the frontend must never see.
+    """
+    api_key = os.getenv("EXA_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=500, detail="EXA_API_KEY is not configured.")
+
+    endpoint = os.getenv("EXA_API_ENDPOINT", DEFAULT_EXA_API_ENDPOINT).strip() or DEFAULT_EXA_API_ENDPOINT
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+            upstream = await client.post(
+                endpoint,
+                headers={"Content-Type": "application/json", "x-api-key": api_key},
+                json=payload,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Exa request failed: {exc}") from exc
+
+    if upstream.status_code >= 400:
+        raise HTTPException(status_code=upstream.status_code, detail=upstream.text)
+
+    return upstream.json()
 
 
 @app.get("/api/portrait/{agent_id}")
